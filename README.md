@@ -13,6 +13,7 @@ Le LAB est composé de 3 conteneurs:
 ## Mise en place du LAB:
 
 Pour mettre en place ce tuto: https://github.com/adminimingo/ansible-lab-docker/
+vidéo de l'installation: https://www.youtube.com/watch?v=O-y_8NGgN28
 
 - Création des images
 - Lancement des containers
