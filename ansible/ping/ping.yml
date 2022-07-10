@@ -1,0 +1,8 @@
+---
+- name: ping sur groupe nodes
+  hosts: nodes
+  remote_user: root
+
+  tasks:
+    - name: ping
+      ping:

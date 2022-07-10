@@ -1,0 +1,355 @@
+Ansible avec un LAB Docker
+Apprendre, tester et se former sur Ansible en construisant un lab Docker.
+
+# Ici le serveur hôte est une distribution Linux ubuntu 22.04 LTS
+# Le serveur hôte peut être n’importe quelle machine, linux, mac, windows, il faut juste que docker soit installé dessus.
+
+# Connexion avec mon nom d'utilisateur
+ssh imingo@192.168.0.99
+imingo@ns1340:~$
+
+# Gestion expiration passwd sudo 
+# timestamp_timeout=10 / expiration pour 10mn
+# timestamp_timeout=0 / pas d'expiration
+# timestamp_timeout=-1 / jamais expiré pour cette session
+cd /etc/sudoers.d
+sudo visudo -f imingo
+Defaults timestamp_timeout=-1
+
+sudo apt install docker.io
+systemctl status docker
+sudo docker info
+  Server Version: 20.10.12
+
+---
+
+## Docker: création d'une image Ubuntu 2204
+mkdir -p ansible-img/lab-ub2204-1.0
+
+nano ansible-img/lab-ub2204-1.0/Dockerfile
+FROM ubuntu:jammy-20220531
+LABEL maintainer="leo"
+
+RUN apt update && apt upgrade -y \
+  && DEBIAN_FRONTEND=noninteractive \
+  && apt install -y apt --no-install-recommends \
+  openssh-server python3 python3-distutils iputils-ping nano locales tzdata \
+  && sed -i 's/^#PermitRootLogin prohibit-password/PermitRootLogin yes/1' /etc/ssh/sshd_config \
+  && echo 'root:toor' | chpasswd \
+  && mkdir /run/sshd \
+  && sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
+  && dpkg-reconfigure --frontend=noninteractive locales \
+  && update-locale LANG=en_US.UTF-8 \
+  && ln -snf /usr/share/zoneinfo/Europe/Paris /etc/localtime && echo Europe/Paris > /etc/timezone \
+  && apt autoclean && rm -rf /tmp/* /var/tmp/*
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D"]
+
+
+sudo docker build -t lab-ub2204:1.0 ./ansible-img/lab-ub2204-1.0
+
+---
+
+## Docker: création d'une image CentOS 7.9
+# systemctl start httpd
+# -> Failed to get D-Bus connection: Operation not permitted
+# correction -> # https://github.com/gdraheim/docker-systemctl-replacement
+mkdir -p ansible-img/lab-centos79-1.0
+
+nano ansible-img/lab-centos79-1.0/Dockerfile
+FROM centos:centos7.9.2009
+LABEL maintainer="leo"
+
+#Timezone
+ENV TZ=Europe/Paris
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+RUN yum update -y
+COPY systemctl3.py /usr/bin/systemctl
+RUN chmod 755 /usr/bin/systemctl && chown root:root /usr/bin/systemctl
+
+RUN yum install -y openssh-server python3 \
+&&  yum clean all \
+&&  sed -i 's/#PermitRootLogin yes/PermitRootLogin yes/' /etc/ssh/sshd_config \
+&&  echo 'root:toor' | chpasswd \
+&&  mkdir /run/sshd \
+&&  ssh-keygen -A
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D"]
+
+
+sudo docker build -t lab-centos79:1.0 ./ansible-img/lab-centos79-1.0
+
+---
+
+## Docker: création d'une image Ubuntu 2204 - Ansible
+mkdir -p ansible-img/lab-ub2204-ansible-1.0
+
+nano ansible-img/lab-ub2204-ansible-1.0/Dockerfile
+FROM lab-ub2204:1.0
+LABEL maintainer="leo"
+
+RUN apt update \
+  && DEBIAN_FRONTEND=noninteractive \
+  && apt install -y software-properties-common \
+  && apt-add-repository -y ppa:ansible/ansible \
+  && apt install -y ansible \
+  && mkdir /root/.ssh && chmod 700 /root/.ssh \
+  && apt autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+
+sudo docker build -t lab-ub2204-ansible:1.0 ./ansible-img/lab-ub2204-ansible-1.0
+
+---
+
+## Docker: création d'une image Ubuntu 2204 - Ansible pip
+mkdir -p ansible-img/lab-ub2204-ansipip-1.0
+
+nano ansible-img/lab-ub2204-ansipip-1.0/Dockerfile
+FROM lab-ub2204:1.0
+LABEL maintainer="leo"
+
+RUN apt update \
+  && DEBIAN_FRONTEND=noninteractive \
+  && apt install -y curl \
+  && curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py \
+  && python3 get-pip.py \
+  && python3 -m pip install ansible-core==2.13.0 \
+  && mkdir /root/.ssh && chmod 700 /root/.ssh \
+  && apt autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+
+sudo docker build -t lab-ub2204-ansipip:1.0 ./ansible-img/lab-ub2204-ansipip-1.0
+
+
+===
+
+sudo docker images
+REPOSITORY           TAG              IMAGE ID       CREATED          SIZE
+lab-ub2204-ansipip   1.0              69dde8f601ae   22 seconds ago   254MB
+lab-ub2204-ansible   1.0              0b92e0f216d2   2 hours ago      739MB
+lab-centos79         1.0              15a13678a0ed   2 hours ago      587MB
+lab-ub2204           1.0              1614898a7df8   2 hours ago      181MB
+ubuntu               jammy-20220531   27941809078c   3 weeks ago      77.8MB
+centos               centos7.9.2009   eeb6ee3f44bd   9 months ago     204MB
+
+===
+
+
+
+## Création des Containers
+
+# Création d'un fichier de conf par défaut pour ne pas demander de checker les clés ssh
+mkdir -p ansible
+cat > ansible/ansible.cfg << EOF
+[defaults]
+host_key_checking = False
+EOF
+
+
+## Container: Ansible
+sudo docker run -d -v `pwd`/ansible:/etc/ansible --name ansible lab-ub2204-ansible:1.0
+sudo docker container inspect -f '{{ .NetworkSettings.IPAddress }}' ansible
+172.17.0.2
+ssh -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null root@172.17.0.2
+ansible --version
+ansible [core 2.12.7]
+  config file = /etc/ansible/ansible.cfg
+
+cat /etc/ansible/ansible.cfg
+[defaults]
+host_key_checking = False
+
+# Pour supprimer
+sudo docker stop ansible | xargs sudo docker rm
+
+
+## Container: Ansible pip
+# Autre façon de l'installer en indiquant une version spécifique '2.13.0'
+sudo docker run -d -v `pwd`/ansible:/etc/ansible --name ansipip lab-ub2204-ansipip:1.0
+sudo docker container inspect -f '{{ .NetworkSettings.IPAddress }}' ansipip
+172.17.0.2
+ssh -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null root@172.17.0.2
+ansible --version
+ansible [core 2.13.0]
+  config file = /etc/ansible/ansible.cfg
+
+cat /etc/ansible/ansible.cfg
+[defaults]
+host_key_checking = False
+
+# Pour supprimer
+sudo docker stop ansipip | xargs sudo docker rm
+
+
+## Container: Ubuntu 2204
+sudo docker run -d --name ubuntu1 lab-ub2204:1.0
+sudo docker container inspect -f '{{ .NetworkSettings.IPAddress }}' ubuntu1
+172.17.0.3
+ssh -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null root@172.17.0.3
+
+# Pour supprimer
+sudo docker stop ubuntu1 | xargs sudo docker rm
+
+
+## Container: CentOS 7.9
+sudo docker run -d --name centos1 lab-centos79:1.0
+sudo docker container inspect -f '{{ .NetworkSettings.IPAddress }}' centos1
+172.17.0.4
+ssh -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null root@172.17.0.4
+
+# Pour supprimer
+sudo docker stop centos1 | xargs sudo docker rm
+
+
+sudo docker ps | cut -c 1-80
+CONTAINER ID   IMAGE                    COMMAND               CREATED          S
+14a57b178abb   lab-centos79:1.0         "/usr/sbin/sshd -D"   6 seconds ago    U
+5bde1bff4408   lab-ub2204:1.0           "/usr/sbin/sshd -D"   13 seconds ago   U
+c77ea7487e4d   lab-ub2204-ansible:1.0   "/usr/sbin/sshd -D"   4 minutes ago    U
+
+===
+
+
+## SSH KEY / mot de passe 'toor'
+imingo@ns1340:~$
+
+# Création clés ssh
+rm -rf ./ansible-rsa
+mkdir ./ansible-rsa
+ssh-keygen -t rsa -b 4096 -C "ansiblelab" -f ./ansible-rsa/id_rsa -q -N ""
+
+# Ansible <- ssh key
+sudo docker ps --format "{{.Names}}" | grep "ansible" | xargs -i sudo docker inspect -f "{{ .NetworkSettings.IPAddress }}" {}
+172.17.0.2
+scp -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null \
+-p ./ansible-rsa/id_rsa* root@172.17.0.2:/root/.ssh
+
+
+# list IP nodes
+sudo docker ps --format "{{.Names}}" | grep "ubuntu\|centos" \
+| xargs -i sudo docker inspect -f "{{ .NetworkSettings.IPAddress }}" {} \
+172.17.0.4
+172.17.0.3
+
+# Nodes <- ssh key
+sudo docker ps --format "{{.Names}}" | grep "ubuntu\|centos" \
+| xargs -i sudo docker inspect -f "{{ .NetworkSettings.IPAddress }}" {} \
+| xargs -i ssh-copy-id -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null -i ./ansible-rsa/id_rsa root@{}
+
+
+---
+
+
+## TEST 1: adhoc dans Container Ansible
+sudo docker container inspect -f '{{ .NetworkSettings.IPAddress }}' ansible
+172.17.0.2
+ssh -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null root@172.17.0.2
+root@c77ea7487e4d:~#
+#export ANSIBLE_HOST_KEY_CHECKING=False
+
+ansible all -i 172.17.0.3,172.17.0.4, -m ping
+172.17.0.3 | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+172.17.0.4 | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+
+
+## TEST 2: adhoc avec docker run Ansible
+imingo@ns1340:~$
+sudo docker run -it --rm -e ANSIBLE_HOST_KEY_CHECKING=False -v `pwd`/ansible-rsa/id_rsa:/root/.ssh/id_rsa lab-ub2204-ansible:1.0 ansible all -i 172.17.0.3,172.17.0.4, -m ping
+172.17.0.3 | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+172.17.0.4 | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+
+
+## TEST 3: adhoc avec fichier inventaire et docker run Ansible
+cat > hosts << EOF
+[ubuntu]
+172.17.0.4
+172.17.0.3
+EOF
+
+sudo docker run -it --rm -e ANSIBLE_HOST_KEY_CHECKING=False -v `pwd`/hosts:/hosts -v `pwd`/ansible-rsa/id_rsa:/root/.ssh/id_rsa lab-ub2204-ansible:1.0 ansible -i /hosts all -m ping
+172.17.0.3 | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+172.17.0.4 | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+
+
+## TEST 4: Playbook dans Container Ansible
+
+cd ansible
+mkdir -p ping
+cd ping
+
+nano hosts
+[nodes]
+172.17.0.3
+172.17.0.4
+
+nano ping.yml
+---
+- name: ping sur groupe nodes
+  hosts: nodes
+  remote_user: root
+
+  tasks:
+    - name: ping
+      ping:
+
+sudo docker container inspect -f '{{ .NetworkSettings.IPAddress }}' ansible
+172.17.0.2
+ssh -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null root@172.17.0.2
+root@c77ea7487e4d:~#
+
+cd /etc/ansible/ping
+ansible-playbook -i hosts ping.yml --syntax-check
+ansible-playbook -i hosts ping.yml
+
+PLAY [ping sur groupe nodes] ***************************************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [172.17.0.3]
+ok: [172.17.0.4]
+
+TASK [ping] ********************************************************************
+ok: [172.17.0.4]
+ok: [172.17.0.3]
+
+PLAY RECAP *********************************************************************
+172.17.0.3                 : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+172.17.0.4                 : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
